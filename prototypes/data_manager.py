@@ -1,7 +1,10 @@
 """Manage domains and page information."""
 
+import os
 from datetime import datetime, timezone
 from enum import Enum
+from math import ceil
+from dataclasses import dataclass
 
 from sqlalchemy import (
     create_engine,
@@ -87,9 +90,33 @@ class CrawlHistory(Base):
         return f"<CrawlHistory(id={self.id}, page_id={self.page_id}, status='{self.status}')>"
 
 
+@dataclass
+class Statistics:
+    """Statistics of recorded domains and pages."""
+
+    total_pages: int
+    queued: int
+    crawling: int
+    completed: int
+    failed: int
+    total_domains: int
+
+
+@dataclass
+class DomainList:
+    """Paginated list of domains."""
+
+    page: int
+    per_page: int
+    total: int
+    total_pages: int
+    domains: list[Domain]
+
+
 class WebCrawlerDB:
-    def __init__(self, db_path: str = "crawler.db"):
-        self.engine = create_engine(f"sqlite:///{db_path}")
+    def __init__(self, db_dir: str, db_filename: str = "crawler.db"):
+        os.makedirs(db_dir, exist_ok=True)
+        self.engine = create_engine(f"sqlite:///{os.path.join(db_dir, db_filename)}")
         Base.metadata.create_all(self.engine)
 
     def add_domain(self, domain: str) -> Domain:
@@ -201,7 +228,7 @@ class WebCrawlerDB:
                 )
             return []
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> Statistics:
         """Get overall crawling statistics."""
         with Session(self.engine) as session:
             total_pages = session.scalar(select(func.count()).select_from(Page))
@@ -227,11 +254,32 @@ class WebCrawlerDB:
             )
             total_domains = session.scalar(select(func.count()).select_from(Domain))
 
-            return {
-                "total_pages": total_pages or 0,
-                "queued": queued or 0,
-                "crawling": crawling or 0,
-                "completed": completed or 0,
-                "failed": failed or 0,
-                "total_domains": total_domains or 0,
-            }
+            return Statistics(
+                total_pages=total_pages or 0,
+                queued=queued or 0,
+                crawling=crawling or 0,
+                completed=completed or 0,
+                failed=failed or 0,
+                total_domains=total_domains or 0,
+            )
+
+    def get_all_domains(self, page: int = 1, per_page: int = 20) -> DomainList:
+        """Get paginated domains, newest first."""
+        with Session(self.engine) as session:
+            total = session.scalar(select(func.count()).select_from(Domain)) or 0
+            total_pages = ceil(total / per_page) if per_page > 0 else 1
+
+            stmt = (
+                select(Domain)
+                .order_by(Domain.created_at.desc())
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            )
+            domains = list(session.scalars(stmt).all())
+            return DomainList(
+                page=page,
+                per_page=per_page,
+                total=total,
+                total_pages=total_pages,
+                domains=domains,
+            )
